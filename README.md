@@ -297,8 +297,9 @@ The current version may still contain several of these components in a single Py
 Clone the repository:
 
 ```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
-cd NYC-Job-Extractor
+git clone
+git clone https://github.com/a2zchambers/AI-NYC-Job-Finder.git
+cd AI-NYC-Job-Finder
 ```
 
 Install the required Python packages:
