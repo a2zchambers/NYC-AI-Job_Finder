@@ -402,3 +402,5 @@ Job information, organization information, AI-generated analysis, and generated 
 Adam Lokhandwalla
 
 This project is part of an ongoing effort to develop practical skills in Python, AI/LLMs, automation, web scraping, data analysis, and application development.
+
+Email: 200chambers@gmail.com
