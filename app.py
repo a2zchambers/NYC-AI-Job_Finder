@@ -1,24 +1,74 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
-from datetime import datetime
-from langchain_community.llms import Ollama
-from selenium import webdriver
+"""
+=============================================================================
+                    HOW TO SET UP AND RUN THIS PROGRAM
+=============================================================================
+If you have never coded before, follow these simple steps on your computer:
+
+STEP 1: INSTALL PYTHON
+1. Go to https://www.python.org/downloads/ and download Python (version 3.10 or newer).
+2. Run the installer. 
+   IMPORTANT: Make sure to check the box that says "Add Python to PATH" before 
+   clicking "Install Now".
+
+STEP 2: OPEN YOUR COMMAND LINE / TERMINAL
+- Windows: Press the Windows Key, type "cmd", and open "Command Prompt".
+- Mac: Press Command + Space, type "Terminal", and open it.
+
+STEP 3: INSTALL THE REQUIRED LIBRARIES
+Copy and paste the following commands one by one into your command prompt/terminal 
+and press Enter after each one to install everything this script needs:
+
+    pip install streamlit pandas langchain-community selenium webdriver-manager beautifulsoup4 python-docx duckduckgo-search
+
+STEP 4: INSTALL AND RUN OLLAMA (Local AI Model)
+This script uses Ollama to run a local AI model (Llama 3.2) for analyzing job postings.
+1. Download Ollama from: https://ollama.com/
+2. Install and open it on your computer.
+3. Open your command prompt/terminal and download the required model by typing:
+    
+    ollama run llama3.2:1b
+
+   (Once the download finishes, you can press Ctrl+D or type '/exit' to close the Ollama prompt, 
+   keeping the Ollama background service running).
+
+STEP 5: SAVE AND RUN THIS SCRIPT
+1. Save this code into a file named exactly: `nyc_job_extractor.py`
+2. Open your command prompt/terminal, navigate to the folder where you saved the file 
+   (e.g., type `cd Documents`), and run the app by typing:
+    
+    streamlit run nyc_job_extractor.py
+
+3. A local webpage will automatically open in your browser where you can use the app!
+=============================================================================
+"""
+
+# Import necessary built-in and third-party libraries for web apps, databases, AI, and scraping
+import streamlit as st          # Used for building the interactive web user interface
+import sqlite3                  # Used for creating and managing the local SQLite database
+import pandas as pd             # Used for organizing and displaying data tables
+from datetime import datetime   # Used for generating timestamps for saved jobs
+from langchain_community.llms import Ollama  # Connects Python to your local Ollama AI model
+from selenium import webdriver  # Powers automated web browsers for scraping dynamic content
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import time
-import docx
+from webdriver_manager.chrome import ChromeDriverManager  # Automatically manages browser drivers
+from bs4 import BeautifulSoup   # Used for parsing and extracting data from HTML pages
+import time                     # Used for adding delays so pages can load properly
+import docx                     # Used for creating Microsoft Word documents
 from docx import Document
-import io
-import difflib
-import json
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from duckduckgo_search import DDGS
+import io                       # Handles in-memory byte streams for file downloads
+import difflib                  # Used for fuzzy text matching (finding similar agency names)
+import json                     # Handles JSON data formatting
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse  # Manipulates web URLs
+from duckduckgo_search import DDGS  # Allows free web searches via DuckDuckGo
 
 # --- 1. DATABASE SETUP WITH RESUME PERSISTENCE & UNIQUE JOB URLS ---
 def init_db():
+    """
+    Initializes the SQLite database ('jobs_batch.db') and creates the 
+    'batch_jobs_v5' table if it doesn't already exist. This stores your 
+    scraped job details, company backgrounds, and generated resumes.
+    """
     try:
         with sqlite3.connect("jobs_batch.db", check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -47,6 +97,7 @@ def init_db():
                 )
             ''')
             
+            # Safely add the job_url column if updating from an older database version
             try:
                 cursor.execute("ALTER TABLE batch_jobs_v5 ADD COLUMN job_url TEXT;")
             except sqlite3.OperationalError:
@@ -59,6 +110,8 @@ def init_db():
 init_db()
 
 # --- STRATEGY 1: Hardcoded NYC Agency Dictionary ---
+# Provides instant, pre-verified background descriptions and application protocols 
+# for major NYC public sector agencies without needing live web lookups.
 NYC_AGENCY_BACKGROUNDS = {
     "DEPT OF INFORMATION TECHNOLOGY & TELECOMM": {
         "description": "DOITT (NYC Cyber Command / OTI) oversees the city's core tech infrastructure, digital services, and cybersecurity operations.",
@@ -88,6 +141,10 @@ NYC_AGENCY_BACKGROUNDS = {
 }
 
 def free_web_lookup(org_name, llm):
+    """
+    Performs a free web search via DuckDuckGo for unlisted organizations and 
+    uses the local AI model to summarize what they do.
+    """
     search_query = f"{org_name} New York company background overview"
     snippets = []
     try:
@@ -119,6 +176,10 @@ def free_web_lookup(org_name, llm):
         return None, None
 
 def enrich_nyc_job_posting(job_data, llm):
+    """
+    Enriches scraped job details with agency background information, checking 
+    hardcoded dictionaries first, falling back to fuzzy matching, and finally web AI search.
+    """
     agency_name = job_data.get("agency", "").strip().upper()
     
     if agency_name in NYC_AGENCY_BACKGROUNDS:
@@ -165,6 +226,9 @@ def enrich_nyc_job_posting(job_data, llm):
     return job_data
 
 def save_jobs_batch(url, jobs_list):
+    """
+    Saves a batch of successfully scraped and parsed jobs into the SQLite database.
+    """
     try:
         with sqlite3.connect("jobs_batch.db", check_same_thread=False) as conn:
             cursor = conn.cursor()
@@ -206,6 +270,10 @@ def save_jobs_batch(url, jobs_list):
 
 # --- HELPER: CONVERT MARKDOWN RESUME TO WORD DOCX ---
 def create_word_document(resume_text):
+    """
+    Converts a plain-text/markdown resume draft into a downloadable 
+    Microsoft Word (.docx) document formatted with standard margins and headings.
+    """
     doc = Document()
     sections = doc.sections
     for section in sections:
@@ -243,6 +311,10 @@ def create_word_document(resume_text):
 
 # --- 2. MULTI-PAGE SCRAPER WITH PRECISE TARGET URL EXTRACTION ---
 def scrape_job_board(url):
+    """
+    Uses Selenium with a headless Chrome browser to load JavaScript-rendered 
+    job board pages and return the raw HTML source code.
+    """
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
@@ -270,6 +342,10 @@ def scrape_job_board(url):
     return html
 
 def build_paged_url(base_url, page_num):
+    """
+    Modifies the pagination query parameter in the search URL so the scraper 
+    can loop through multiple pages of results seamlessly.
+    """
     parsed = urlparse(base_url)
     query_params = parse_qs(parsed.query)
     query_params['page'] = [str(page_num)]
@@ -277,12 +353,13 @@ def build_paged_url(base_url, page_num):
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
 
 # --- 3. STREAMLIT UI ---
+# Configures the browser tab title, icon, and wide layout format
 st.set_page_config(page_title="NYC Manhattan Job Extractor (Precise Job Links)", page_icon="📑", layout="wide")
 
 st.sidebar.title("🎯 Job Search Strategy Guide")
 st.sidebar.markdown("""
 ### Multi-Page Pipeline & Link Extraction:
-- **Precise URL Matching:** Target individual posting formats (`https://cityjobs.nyc.gov/job/[title]-in-[borough]-jid-[id]`). BeautifulSoup scans every anchor tag (`<a>`) inside each job card, slicing exact unique URLs like the NYCHA or DOT examples.
+- **Precise URL Matching:** Target individual posting formats (`https://cityjobs.nyc.gov/job/[title]-in-[borough]-jid-[id]`). BeautifulSoup scans every anchor tag (`<a>`) inside each job card, slicing exact unique URLs.
 - **4-5 Pages Scraped:** Captures dozens of live listings.
 - **Unverified Retained:** Keeps newly posted or unmapped roles for manual inspection.
 - **Direct Gateway:** Each card's button takes you straight to that specific posting page in one click.
@@ -331,7 +408,6 @@ if st.button("Extract Filtered Jobs Across Pages", type="primary"):
                     
                 # --- PRECISE JOB LINK EXTRACTION ---
                 extracted_job_url = "https://cityjobs.nyc.gov/jobs"
-                # Search specifically for links containing '/job/' or fallback to any anchor
                 all_links = card.find_all('a', href=True)
                 for link in all_links:
                     href = link['href']
@@ -344,7 +420,6 @@ if st.button("Extract Filtered Jobs Across Pages", type="primary"):
                             extracted_job_url = f"https://cityjobs.nyc.gov/{href}"
                         break
                 else:
-                    # Fallback to the first available link if no explicit /job/ path is spotted
                     if all_links:
                         href = all_links[0]['href']
                         if href.startswith("http"):
